@@ -70,11 +70,18 @@ namespace DemoCS
             try
             {
                 DemoCSclient.BeginDisconnect(true, new AsyncCallback(DisConnectCallback), DemoCSclient);
-                disConnectDone.WaitOne();
+                if(disConnectDone.WaitOne(5*1000))
+                {
+                    this.DisconnectEvent(true);
+                }
+                else
+                {
+                    this.DisconnectEvent(false);
+                }
             }
             catch(Exception)
             {
-
+                this.DisconnectEvent(false);
             }
         }
 
@@ -174,15 +181,14 @@ namespace DemoCS
                 
                 DemoCSclient.Close();
                 DemoCSclient.Dispose();
-                disConnectDone.Set();
+                
                 DemoCSclient = null;
-                this.DisconnectEvent(true);
             }
             catch (Exception ex)
             {
                 Console.WriteLine(ex.ToString());
-                this.DisconnectEvent(false);
             }
+            disConnectDone.Set();
         }
 
         public void Receive()

@@ -15,23 +15,27 @@ using System.Windows.Forms;
 using Newtonsoft.Json.Linq;
 using System.Timers;
 using System.IO;
+using System.Security.Cryptography;
 
 namespace DemoCS
 {
     public partial class CLaa_IoT : Form
     {
+        [DllImport("Aes128_CMac_Dll.dll", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl,EntryPoint = "challenge_identification")]
+        static extern void challenge_identification(byte[] appkey, UInt64 appeui, UInt32 appnonce,ref byte challenge);
+
         private delegate void WriteTestLogDelegate(string msg, Color col);
 
         string m_strResultPath = @"C:\0283000116\InBound_Test";
 
         List<TestDevice> CheckDeviceList = new List<TestDevice>();
+        //mbedtls_aes_context aes;
 
         string m_LogRecord = string.Empty;
         string m_JoinDeviceType = string.Empty;
         string m_UpdataDeviceType = string.Empty;
 
-        Socket client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        AsynchronousClient CsClient = new AsynchronousClient();
+        AsynchronousClient CsClient = null;
 
         System.Timers.Timer heartCheckTimer = new System.Timers.Timer();
 
@@ -52,12 +56,12 @@ namespace DemoCS
         bool m_bInitiativeDisconnect = false;
         private static object UsingInitiativeDisconnecLocker = new object();
 
-        Thread recvThread;
         Thread sendThread;
         Thread ReConnectThread;
 
         bool m_bConnectMspSuccess = false;
-        private static object UsingConnectMspSuccessLocker = new object();
+        AutoResetEvent m_WaitConnectEvent = new AutoResetEvent(false);
+
         public CLaa_IoT()
         {
             InitializeComponent();
@@ -96,79 +100,86 @@ namespace DemoCS
             return regex.IsMatch(strPort);
         }
 
-        private void dealRegister()
+        private bool dealRegister()
         {
+            m_bConnectMspSuccess = false;
+
             if (this.Text_MSPIP.Text.Trim().Equals(""))
             {
                 WriteTestLog("请输入MSP IP地址", Color.Red);
-                return;
+                return false;
             }
             if (!checkIP(this.Text_MSPIP.Text.Trim()))
             {
                 WriteTestLog("请输入合法的 IP地址", Color.Red);
-                return;
+                return false;
             }
 
             if (this.Text_MSPPort.Text.Trim().Equals(""))
             {
                 WriteTestLog("请输入MSP 端口", Color.Red);
-                return;
+                return false;
             }
             if (!checkPort(this.Text_MSPPort.Text.Trim()))
             {
                 WriteTestLog("请输入合法的 端口，例如：30003", Color.Red);
-                return;
+                return false;
             }
             if (this.textBoxJoinEui.Text.Trim().Equals(""))
             {
                 WriteTestLog("请输入JoinEUI", Color.Red);
-                return;
+                return false;
             }
 
             if (!checkEUI(this.textBoxJoinEui.Text.Trim()))
             {
                 WriteTestLog("请输入合法的JoinEUI，长度为16位，0-f,例：2c26c50065650030", Color.Red);
-                return;
+                return false;
             }
 
-            //connect_MSP(this.Text_MSPIP.Text, this.Text_MSPPort.Text);
+            m_WaitConnectEvent.Reset();
             CsClient.StartConnectClient(this.Text_MSPIP.Text, this.Text_MSPPort.Text);
+
+            if (m_WaitConnectEvent.WaitOne(60 * 1000))
+            {
+                if (m_bConnectMspSuccess)
+                {
+                    WriteTestLog(string.Format("连接服务器：{0}，成功", this.Text_MSPIP.Text), Color.Green);
+                }
+                else
+                {
+                    WriteTestLog(string.Format("连接服务器：{0}，失败", this.Text_MSPIP.Text), Color.Red);
+                    System.Threading.Thread.Sleep(5 * 1000);
+                }
+            }
+            else
+            {
+                WriteTestLog(string.Format("连接服务器：{0}，超时", this.Text_MSPIP.Text), Color.Green);
+            }
+            return m_bConnectMspSuccess;
         }
         private void buttonRegister_Click(object sender, EventArgs e)
         {
-            lock(UsingInitiativeDisconnecLocker)
-            {
-                m_bInitiativeDisconnect = false;
-            }
-            
-            dealRegister();
+            m_bInitiativeDisconnect = false;
+
+            Thread ConnectThread = new Thread(ConnectServer);
+            ConnectThread.IsBackground = true;
+            ConnectThread.Start();   
         }
-        private void DisconnectFromMSP()
+
+        private void ConnectServer()
         {
-            try
-            {
-                if (client.Connected)
-                {
-                    client.Disconnect(true);
-                }
-            }
-            catch (Exception ex)
-            {
-                WriteTestLog(ex.Message, Color.Red);
-            }
+            dealRegister();
         }
         private void dealUnRegister()
         {
             string quitData = string.Format("{{\"cmd\":\"quit\",\"cmdseq\":{0}}}", getCmdSeq());
             sendDataToMSP(quitData);
-           // DisconnectFromMSP();
         }
         private void buttonUnRegister_Click(object sender, EventArgs e)
         {
-            lock (UsingInitiativeDisconnecLocker)
-            {
-                m_bInitiativeDisconnect = true;
-            }
+            m_bInitiativeDisconnect = true;
+
             heartCheckTimer.Enabled = false;
             heartCheckTimer.Stop();
 
@@ -257,35 +268,8 @@ namespace DemoCS
                     break;
             }
         }
-        private bool connect_MSP(string mspid, string strport)
-        {
-            IPAddress ip = IPAddress.Parse(mspid);
-            IPEndPoint point = new IPEndPoint(ip, int.Parse(strport));
-
-            try
-            {
-                //连接到服务器
-                client.Connect(point);
-                WriteTestLog("连接成功," + "服务器:" + client.RemoteEndPoint.ToString() + " 客户端:" + client.LocalEndPoint.ToString(), Color.Green);
-                registerEUI(this.textBoxJoinEui.Text);
-
-                //连接成功后，就可以接收服务器发送的信息了
-                recvThread = new Thread(ReceiveMsg);
-                recvThread.IsBackground = true;
-                recvThread.Start();
-            }
-            catch (Exception ex)
-            {
-                WriteTestLog(ex.Message, Color.Red);
-                return false;
-            }
-            return true;
-        }
-
         private void sendDataToMSP(string data)
         {
-            //if (null != client && client.Connected)
-           // {
                 try
                 {
                     int length = (data.Length + 1) & 0xFFFF;
@@ -305,18 +289,12 @@ namespace DemoCS
                     Buffer.BlockCopy(str, 0, senddata, 5, data.Length);
 
                     senddata[data.Length + 5] = UTF8Encoding.UTF8.GetBytes("\0")[0];
-                    //client.Send(senddata);
                     CsClient.Send(senddata);
                 }
                 catch (Exception ex)
                 {
                     WriteTestLog(ex.Message, Color.Red);
                 }
-          //  }
-         //   else
-         //   {
-         //       WriteTestLog("没有连接msp,请进行注册之后再发送相关消息", Color.Red);
-        //    }
         }
         private void sendMsg()
         {
@@ -363,56 +341,110 @@ namespace DemoCS
             }
             try
             {
-                string cmd = (string)obj["cmd"];
+                string cmd = (null == obj["cmd"]?"":(string)obj["cmd"]);
                 if (cmd.Equals("join_ack"))
                 {
                     WriteTestLog(recvData, Color.Green);
-                    int Code = (int)obj["code"];
+                    int Code = (null == obj["code"]?0:(int)obj["code"]);
                     if (Code.Equals(200) || Code.Equals(203))
-                    {
-                        lock(UsingConnectMspSuccessLocker)
-                        {
-                            m_bConnectMspSuccess = true;
-                        }
-                        
+                    {                       
                         this.buttonRegister.Enabled = false;
                         this.buttonUnRegister.Enabled = true;
 
-                        heartCheckTimer.Enabled = true;
+                        heartCheckTimer.Enabled = false;
                         heartCheckTimer.Stop();
+                        heartCheckTimer.Enabled = true;
                         heartCheckTimer.Start();
                     }
                 }
                 else if (cmd.Equals("updata"))
                 {
-                    updataData.deveui = (string)obj["deveui"];
-                    updataData.payload = (string)obj["payload"];
-                    updataData.port = (int)obj["port"];
+                    updataData.deveui = (null == obj["deveui"]?"":(string)obj["deveui"]);
+                    updataData.payload = (null == obj["payload"]?"":(string)obj["payload"]);
+                    updataData.port = (null == obj["port"]?0:(int)obj["port"]);
 
-                    string strDetail = obj["detail"].ToString();
-                    JObject objDetail = JObject.Parse(strDetail);
+                    string strDetail = (null == obj["detail"]?"":obj["detail"].ToString());
+                    if(string.IsNullOrEmpty(strDetail))
+                    {
+                        WriteTestLog("no detail field,check the app config", Color.Red);
+                        return;
+                    }
+                    JObject objDetail = null;
+                    try
+                    {
+                        objDetail = JObject.Parse(strDetail);
+                    }
+                    catch
+                    {
+                        WriteTestLog("parse detai field fail", Color.Red);
+                        return;
+                    }
+                    
 
-                    string strApp = objDetail["app"].ToString();
-                    JObject objApp = JObject.Parse(strApp);
-                    updataData.seqno = (int)objApp["seqno"];
+                    string strApp = (null == objDetail["app"]?"":objDetail["app"].ToString());
+                    if(string.IsNullOrEmpty(strApp))
+                    {
+                        WriteTestLog("no app field,check the app config", Color.Red);
+                        return;
+                    }
+                    JObject objApp = null;
+                    try
+                    {
+                        objApp = JObject.Parse(strApp);
+                    }
+                    catch
+                    {
+                        WriteTestLog("parse app field fail", Color.Red);
+                        return;
+                    }
+                    updataData.seqno = (null == objApp["seqno"]?0:(int)objApp["seqno"]);
 
-                    string strMotetx = objApp["motetx"].ToString();
-                    JObject objMotetx = JObject.Parse(strMotetx);
-                    updataData.freq = (float)objMotetx["freq"];
-                    updataData.datr = (string)objMotetx["datr"];
+                    string strMotetx = (null == objApp["motetx"]?"":objApp["motetx"].ToString());
+                    if(string.IsNullOrEmpty(strMotetx))
+                    {
+                        WriteTestLog("motetx field is empty", Color.Red);
+                        return;
+                    }
+                    JObject objMotetx = null;
+                    try
+                    {
+                        objMotetx = JObject.Parse(strMotetx);
+                    }
+                    catch
+                    {
+                        WriteTestLog("parse motetx field fail", Color.Red);
+                        return;
+                    }
+
+                    updataData.freq = (null == objMotetx["freq"]?0:(float)objMotetx["freq"]);
+                    updataData.datr = (null == objMotetx["datr"]?"":(string)objMotetx["datr"]);
 
                     WriteTestLog(string.Format("deveui:{0},port:{1},seqno:{2},freq:{3},datr:{4},payload:{5}", updataData.deveui, updataData.port, updataData.seqno, updataData.freq, updataData.datr, updataData.payload), Color.Green);
                     if (this.checkBox_File.Checked)
                     {
                         m_UpdataDeviceType = getDeviceType(updataData.deveui);
-                        string strGwRx = objApp["gwrx"].ToString();
-                        JArray jarGwRx = JArray.Parse(strGwRx);
+                        string strGwRx = (null == objApp["gwrx"]?"":objApp["gwrx"].ToString());
+                        if(string.IsNullOrEmpty(strGwRx))
+                        {
+                            WriteTestLog("gwrx field is empty", Color.Red);
+                            return;
+                        }
+                        JArray jarGwRx = null;
+                        try
+                        {
+                            jarGwRx = JArray.Parse(strGwRx);
+                        }
+                        catch
+                        {
+                            WriteTestLog("parse gwrx field fail", Color.Red);
+                            return;
+                        }
                         int iCount = jarGwRx.Count;
                         for (int i = 0; i < iCount; i++)
                         {
-                            updataData.gweui = (string)jarGwRx[i]["gweui"];
-                            updataData.rssic = (float)jarGwRx[i]["rssic"];
-                            updataData.lsnr = (float)jarGwRx[i]["lsnr"];
+                            updataData.gweui = (null == jarGwRx[i]["gweui"]?"":(string)jarGwRx[i]["gweui"]);
+                            updataData.rssic = (null == jarGwRx[i]["rssic"]?0:(float)jarGwRx[i]["rssic"]);
+                            updataData.lsnr = (null == jarGwRx[i]["lsnr"]?0:(float)jarGwRx[i]["lsnr"]);
                             SaveResult(false);
                         }
                     }
@@ -422,11 +454,11 @@ namespace DemoCS
                     WriteTestLog(recvData, Color.Green);
                     if (this.checkBox_File.Checked)
                     {
-                        devJoinData.deveui = (string)obj["deveui"];
+                        devJoinData.deveui = (null == obj["deveui"]?"":(string)obj["deveui"]);
                         m_JoinDeviceType = getDeviceType(devJoinData.deveui);
 
-                        devJoinData.classType = (string)obj["class"];
-                        devJoinData.version = (string)obj["ver"];
+                        devJoinData.classType = (null == obj["class"]?"":(string)obj["class"]);
+                        devJoinData.version = (null == obj["ver"]?"":(string)obj["ver"]);
                         SaveResult(true);
                     }
                 }
@@ -456,10 +488,6 @@ namespace DemoCS
                 else if (cmd.Equals("forced_quit"))
                 {
                     WriteTestLog(recvData, Color.Green);
-                    CsClient.StartDisConnectClient();
-                    //this.buttonRegister.Enabled = true;
-                    //this.buttonUnRegister.Enabled = false;
-                    //dealRegister();
                 }
                 else if (cmd.Equals("bcast_ack"))
                 {
@@ -470,6 +498,14 @@ namespace DemoCS
                     WriteTestLog(recvData, Color.Green);
                 }
                 else if (cmd.Equals("dev_online"))
+                {
+                    WriteTestLog(recvData, Color.Green);
+                }
+                else if (cmd.Equals("dev_state_notify"))
+                {
+                    WriteTestLog(recvData, Color.Green);
+                }
+                else
                 {
                     WriteTestLog(recvData, Color.Green);
                 }
@@ -501,46 +537,6 @@ namespace DemoCS
             return null;
         }
 
-        void ReceiveMsg()
-        {
-            while (true)
-            {
-                byte[] buffer = new byte[1024 * 10];
-                int recvLength = 0;
-                try
-                {
-                    recvLength = client.Receive(buffer);
-                }
-                catch (Exception ex)
-                {
-                    WriteTestLog(ex.Message, Color.Red);
-                    break;
-                }
-                if (recvLength > 5)
-                {
-                    byte[] JsonByte = new byte[recvLength - 5];
-                    Buffer.BlockCopy(buffer, 5, JsonByte, 0, recvLength - 5);
-                    string recvData = Encoding.UTF8.GetString(JsonByte, 0, recvLength - 5);
-
-                    string[] recv = recvData.Split(new string[] { "\n12" }, StringSplitOptions.RemoveEmptyEntries);
-                    for (int i = 0; i < recv.Length; i++)
-                    {
-                        byte[] str = Encoding.UTF8.GetBytes(recv[i]);
-                        if (0 != i)
-                        {
-                            recvData = Encoding.UTF8.GetString(str, 2, str.Length - 2);
-                        }
-                        else
-                        {
-                            recvData = Encoding.UTF8.GetString(str, 0, str.Length);
-                        }
-                        recvData = recvData.TrimEnd('\0');
-                        dealRecvData(recvData);
-                    }
-
-                }
-            }
-        }
         private void WriteTestLog(string msg, Color col)
         {
             try
@@ -557,6 +553,7 @@ namespace DemoCS
                     this.richTextBox_Log.AppendText(string.Format("{0}:",System.DateTime.Now));
                     this.richTextBox_Log.AppendText(log);
                     this.richTextBox_Log.AppendText("\r\n");
+                    this.richTextBox_Log.ScrollToCaret();
                     m_LogRecord = m_LogRecord + log + "\n";
                 }
             }
@@ -666,6 +663,15 @@ namespace DemoCS
             heartCheckTimer.Enabled = true;
             heartCheckTimer.Start();
         }
+
+        void CreateSocketClient()
+        {
+            CsClient = new AsynchronousClient();
+            CsClient.ConnectEvent += new AsynchronousClient.SocketConnectResultEventHandler(SocketConnectResult);
+            CsClient.DisconnectEvent += new AsynchronousClient.SocketDisconnectResultEventHandler(SocketDisconnectResult);
+            CsClient.SendDataEvent += new AsynchronousClient.SocketSendEventHandler(SocketSendResult);
+            CsClient.RecvDataEvent += new AsynchronousClient.SocketRecvEventHandler(SocketRecvString);
+        }
         private void CLaa_IoT_Load(object sender, EventArgs e)
         {
             Control.CheckForIllegalCrossThreadCalls = false;
@@ -684,7 +690,7 @@ namespace DemoCS
             this.Text_MSPIP.Text = "139.129.216.128";
             this.Text_MSPPort.Text = "30003";
             this.textBoxJoinEui.Text = "2c26c50065650030";
-
+           
             this.buttonRegister.Enabled = true;
             this.buttonUnRegister.Enabled = false;
 
@@ -700,15 +706,12 @@ namespace DemoCS
                 this.buttonFind.Hide();
             }
 
-            heartCheckTimer.Enabled = true;
-            heartCheckTimer.Interval = 60000; //执行间隔时间,单位为毫秒; 这里实际间隔为1分钟  
+            heartCheckTimer.Enabled = false;
+            heartCheckTimer.Interval = 61000; //执行间隔时间,单位为毫秒; 这里实际间隔为1分钟  
             heartCheckTimer.Elapsed += new System.Timers.ElapsedEventHandler(HeartTimeOut);
             heartCheckTimer.Stop();
 
-            CsClient.ConnectEvent += new AsynchronousClient.SocketConnectResultEventHandler(SocketConnectResult);
-            CsClient.DisconnectEvent += new AsynchronousClient.SocketDisconnectResultEventHandler(SocketDisconnectResult);
-            CsClient.SendDataEvent += new AsynchronousClient.SocketSendEventHandler(SocketSendResult);
-            CsClient.RecvDataEvent += new AsynchronousClient.SocketRecvEventHandler(SocketRecvString);
+            CreateSocketClient();
         }
 
         private void SocketConnectResult(bool bConnect)
@@ -722,6 +725,8 @@ namespace DemoCS
             {
 
             }
+            m_bConnectMspSuccess = bConnect;
+            m_WaitConnectEvent.Set();
         }
         private void SocketDisconnectResult(bool bDisconnect)
         {
@@ -729,56 +734,34 @@ namespace DemoCS
             {
                 this.buttonRegister.Enabled = true;
                 this.buttonUnRegister.Enabled = false;
-                WriteTestLog("Disconnect from " + this.Text_MSPIP.Text,Color.Red);
+                WriteTestLog(string.Format("Disconnect from {0},成功",this.Text_MSPIP.Text),Color.Red);
             }
             else
             {
-                WriteTestLog(string.Format("Disconnect from {0} error",this.Text_MSPIP.Text), Color.Red);
+                WriteTestLog(string.Format("Disconnect from {0} 失败",this.Text_MSPIP.Text), Color.Red);
             }
-            lock (UsingConnectMspSuccessLocker)
+
+            if (!m_bInitiativeDisconnect)
             {
-                m_bConnectMspSuccess = false;
+                ReConnectThread = new Thread(ReConnect);
+                ReConnectThread.IsBackground = true;
+                ReConnectThread.Start();
             }
-
-            lock(UsingInitiativeDisconnecLocker)
-            {
-                if (!m_bInitiativeDisconnect)
-                {
-
-                    ReConnectThread = new Thread(ReConnect);
-                    ReConnectThread.IsBackground = true;
-                    ReConnectThread.Start();
-                }
-            }
-
         }
-
         private void ReConnect()
         {
             while(true)
             {
                 WriteTestLog(string.Format("正在重新连接服务器：{0}", this.Text_MSPIP.Text), Color.Red);
-                dealRegister();
-                lock (UsingConnectMspSuccessLocker)
+                CreateSocketClient();
+                if (dealRegister())
                 {
-                    if (m_bConnectMspSuccess)
-                    {
-                        WriteTestLog(string.Format("成功连接服务器：{0}", this.Text_MSPIP.Text), Color.Red);
-                        break;
-                    }
-                    else
-                    {
-                        System.Threading.Thread.Sleep(2000);
-                    }
+                    break;
                 }
-
-                lock (UsingInitiativeDisconnecLocker)
+                else
                 {
-                    if (!m_bInitiativeDisconnect)
-                    {
-                        WriteTestLog(string.Format("主动断开 {0} 的连接", this.Text_MSPIP.Text), Color.Red);
-                        break;
-                    }
+                    WriteTestLog(string.Format("静等60秒后会再次尝试重连"), Color.Red);
+                    System.Threading.Thread.Sleep(1000*60);
                 }
             }
         }
@@ -821,10 +804,11 @@ namespace DemoCS
             WriteTestLog(strnumber, Color.Red);
             if (iRecvHeartBeatNumber >= 3)
             {
-                CsClient.StartDisConnectClient();
-                recvThread.Abort();
+                iRecvHeartBeatNumber = 0;
                 heartCheckTimer.Enabled = false;
                 heartCheckTimer.Stop();
+
+                CsClient.StartDisConnectClient();
             }
         }
         private void comboBox_Cmd_SelectedIndexChanged(object sender, EventArgs e)
@@ -832,9 +816,63 @@ namespace DemoCS
             selectcmd = (CMD)this.comboBox_Cmd.SelectedIndex;
         }
 
+        private byte[] HexStringToByteArray(string s)
+        {
+            s = s.Replace(" ", "");
+            byte[] buffer = new byte[s.Length / 2+1];
+            for (int i = 0; i < s.Length; i += 2)
+                buffer[i / 2] = (byte)Convert.ToByte(s.Substring(i, 2), 16);
+            return buffer;
+        }
+        private string GenerateChallenge(string appeui, UInt32 appnonce)
+        {
+            /*
+            byte[] msg = new byte[16];
+            byte[] AppeuiArray = strToToHexByte(appeui);
+            byte[] AppNonceArray = BitConverter.GetBytes(appnonce);
+            int index = 0;
+            for(index=0;index < AppeuiArray.Length;index++)
+            {
+                msg[index] = AppeuiArray[index];
+            }
+
+            for (int i=AppNonceArray.Length-1;i>=0;i--)
+            {
+                msg[index] = AppNonceArray[i];
+                index++;
+            }
+
+            RijndaelManaged rDel = new RijndaelManaged();
+  
+            byte[] keyArray = strToToHexByte("ffffffffffffffffffffffffffffffff");
+            byte[] ivArray = new byte[16];// UTF8Encoding.UTF8.GetBytes("0000000000000000");
+            rDel.Key = keyArray;
+            rDel.IV = ivArray;
+            rDel.Mode = CipherMode.CBC;
+            rDel.Padding = PaddingMode.None;
+
+            ICryptoTransform cTransform = rDel.CreateEncryptor();
+          
+            byte[] resultArray = cTransform.TransformFinalBlock(msg, 0, msg.Length);
+            
+
+            return Convert.ToBase64String(resultArray, 0, resultArray.Length);
+            */
+            byte[] keyArray = strToToHexByte("ffffffffffffffffffffffffffffffff");
+            UInt64 inAppeui = Convert.ToUInt64(appeui, 16);
+            byte[] challenge = new byte[32 + 1];
+            challenge_identification(keyArray, inAppeui, appnonce, ref challenge[0]);
+            string strChallenge = System.Text.Encoding.Default.GetString(challenge).TrimEnd('\0');//.Remove(32);
+            return strChallenge;
+        }
+
         private void registerEUI(string strEUI)
         {
-            string JoinData = string.Format("{{\"cmd\":\"join\",\"cmdseq\":{0},\"appeui\":\"{1}\",\"appnonce\":1,\"challenge\":\"1\"}}", getCmdSeq(), strEUI);
+            Random rd = new Random();
+            UInt32 randInt = (UInt32)rd.Next();
+            
+            WriteTestLog(string.Format("appnonce:{0}",randInt),Color.Red);
+            string JoinData = string.Format("{{\"cmd\":\"join\",\"cmdseq\":{0},\"appeui\":\"{1}\",\"appnonce\":{2},\"challenge\":\"{3}\"}}", getCmdSeq(), strEUI, randInt, GenerateChallenge(strEUI, randInt));
             sendDataToMSP(JoinData);
         }
 
