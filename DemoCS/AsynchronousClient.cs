@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -13,14 +14,16 @@ namespace DemoCS
     {
         //定义的委托事件
         public delegate void SocketConnectResultEventHandler(bool bConnect);
-        public delegate void SocketSendEventHandler(bool bResult);
+        //public delegate void SocketSendEventHandler(bool bResult);
         public delegate void SocketRecvEventHandler(string strRecv);
-        public delegate void SocketDisconnectResultEventHandler(bool bDisconnect);
+        //public delegate void SocketDisconnectResultEventHandler(bool bDisconnect);
+        public delegate void WriteLogEventHandler(string msg, Color col);
 
         public event SocketConnectResultEventHandler ConnectEvent;
-        public event SocketSendEventHandler SendDataEvent;
+        //public event SocketSendEventHandler SendDataEvent;
         public event SocketRecvEventHandler RecvDataEvent;
-        public event SocketDisconnectResultEventHandler DisconnectEvent;
+        //public event SocketDisconnectResultEventHandler DisconnectEvent;
+        public event WriteLogEventHandler WriteLog;
 
         //ManualResetEvent instances signal completion.
         Socket DemoCSclient =null;
@@ -39,10 +42,10 @@ namespace DemoCS
         private string m_MspIp = string.Empty;
         private string m_Port = string.Empty;
 
-        Thread ConnectMSPThread;
-        Thread DisConnectMSPThread;
-        Thread DataSendThread;
-        Thread DataRecvThread;
+        Thread ConnectMSPThread = null;
+        Thread DisConnectMSPThread = null;
+        Thread DataSendThread = null;
+        Thread DataRecvThread = null;
 
         public bool GetConnectState()
         {
@@ -57,11 +60,22 @@ namespace DemoCS
                 DemoCSclient = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
 
                 //connect to the remote endpoint.
+                WriteLog("before beginConnect",Color.Black);
                 DemoCSclient.BeginConnect(remoteIP, new AsyncCallback(ConnectCallback), DemoCSclient);
-                connectDone.WaitOne();
+                if(connectDone.WaitOne(70*1000))
+                {
+                    WriteLog("Connect Success", Color.Black);
+                    this.ConnectEvent(true);
+                }
+                else
+                {
+                    WriteLog("Connect Fail", Color.Black);
+                    this.ConnectEvent(false);
+                }
             }
             catch(Exception)
             {
+                WriteLog("Connect Exception", Color.Black);
                 this.ConnectEvent(false);
             }
         }
@@ -69,7 +83,17 @@ namespace DemoCS
         {
             try
             {
-                DemoCSclient.BeginDisconnect(true, new AsyncCallback(DisConnectCallback), DemoCSclient);
+                if(null != DemoCSclient && DemoCSclient.Connected)
+                {
+                    DemoCSclient.Shutdown(SocketShutdown.Both);
+                    System.Threading.Thread.Sleep(10);
+                    DemoCSclient.Close();
+                    DemoCSclient = null;
+                }
+
+                //this.DisconnectEvent(true);
+                /*
+                DemoCSclient.BeginDisconnect(false, new AsyncCallback(DisConnectCallback), DemoCSclient);
                 if(disConnectDone.WaitOne(5*1000))
                 {
                     this.DisconnectEvent(true);
@@ -78,47 +102,69 @@ namespace DemoCS
                 {
                     this.DisconnectEvent(false);
                 }
+                */
             }
             catch(Exception)
             {
-                this.DisconnectEvent(false);
+                //this.DisconnectEvent(false);
             }
         }
 
         private void StartSend()
         {
+            if(null == DemoCSclient)
+            {
+                WriteLog("in StartSend this DemoCSClient is null so return", Color.Red);
+                return;
+            }
             try
             {
                 byte[] byteData = Encoding.UTF8.GetBytes(sendString);
                 DemoCSclient.BeginSend(byteData, 0, byteData.Length, 0, new AsyncCallback(SendCallback), DemoCSclient);
-                sendDone.WaitOne();
+                if(sendDone.WaitOne(60*1000))
+                {
+                    //WriteLog("in StartSend  send ok", Color.Red);
+                }
+                else
+                {
+                    WriteLog("in StartSend send timeout", Color.Red);
+                }
             }
             catch(Exception ex)
             {
-                this.SendDataEvent(false);
-                Console.WriteLine(ex.ToString());
-            }
-            
+                //this.SendDataEvent(false);
+                WriteLog("in StartSend exception" +ex.ToString(),Color.Red);
+            }  
         }
 
         private void StartRecv()
         {
-
-         //   while (true)
-          //  {
-                try
+            if(null == DemoCSclient)
+            {
+                WriteLog(" in StartRecv,the DemoCSclient is null so return", Color.Black);
+                return;
+            }
+            //   while (true)
+            //  {
+            //WriteLog(" in StartRecv", Color.Black);
+            try
                 {
+                    if(!DemoCSclient.Connected)
+                    {
+                        return;
+                    }
                     //Create the state object.
                     StateObject state = new StateObject();
                     state.workSocket = DemoCSclient;
 
-                    //Begin receiving the data from the remote device.
+                //WriteLog("beginReceive", Color.Black);
+                //Begin receiving the data from the remote device.
                     DemoCSclient.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0, new AsyncCallback(ReceiveCallback), state);
                     receiveDone.WaitOne();
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine(ex.ToString());
+                    WriteLog(ex.ToString() + " in catch StartRecv", Color.Black);
                 }
            // }
         }
@@ -142,17 +188,19 @@ namespace DemoCS
 
         private void ConnectCallback(IAsyncResult ar)
         {
+            WriteLog("In ConnectCallback", Color.Black);
             try
             {
+                WriteLog("End Connect", Color.Black);
                 Socket client = (Socket)ar.AsyncState;
                 client.EndConnect(ar);
                 //Console.WriteLine("Socket connected to {0}", client.RemoteEndPoint.ToString());
                 //Signal that the connection has been made.
                 connectDone.Set();
-                this.ConnectEvent(true);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                WriteLog("exception:"+ ex.Message, Color.Black);
                 this.ConnectEvent(false);
             }
         }
@@ -161,14 +209,13 @@ namespace DemoCS
         {
             try
             {
-                DemoCSclient.Shutdown(SocketShutdown.Both);
                 DisConnectMSPThread = new Thread(StartDisConnect);
                 DisConnectMSPThread.IsBackground = true;
                 DisConnectMSPThread.Start();   
             }
             catch (Exception)
             {
-                this.DisconnectEvent(false);
+                //this.DisconnectEvent(false);
             }
         }
 
@@ -176,6 +223,8 @@ namespace DemoCS
         {
             try
             {
+                DemoCSclient.Shutdown(SocketShutdown.Both);
+                DemoCSclient.Disconnect(false);
                 //Signal that the connection has been made.
                 DemoCSclient.EndDisconnect(ar);
                 
@@ -193,8 +242,13 @@ namespace DemoCS
 
         public void Receive()
         {
+            WriteLog("start Receive", Color.Black);
             try
             {
+                if(null != DataRecvThread)
+                {
+                    DataRecvThread.Abort();
+                }
                 DataRecvThread = new Thread(StartRecv);
                 DataRecvThread.IsBackground = true;
                 DataRecvThread.Start();
@@ -202,6 +256,7 @@ namespace DemoCS
             catch(Exception ex)
             {
                 Console.WriteLine(ex.ToString());
+                WriteLog(ex.ToString() + " in catch Receive", Color.Black);
             }
         }
 
@@ -211,8 +266,21 @@ namespace DemoCS
             {
                 //Retrieve the state object and the client socket.
                 // from the asynchronous state object.
+                if(null == ar)
+                {
+                    return;
+                }
+
                 StateObject state = (StateObject)ar.AsyncState;
+                if(null == state)
+                {
+                    return;
+                }
                 Socket client = state.workSocket;
+                if(null == client)
+                {
+                    return;
+                }
 
                 //Read data from the remote device.
                 int bytesRead = client.EndReceive(ar);
@@ -220,29 +288,23 @@ namespace DemoCS
                 {
                     // There might be more data,so store the data received so far.
                     state.sb.Append(Encoding.ASCII.GetString(state.buffer, 0, bytesRead));
-                    Console.WriteLine("recv data: {0} from server", state.sb.ToString());
+                    //WriteLog(string.Format("ReceiveCallback recv data: {0} from server", state.sb.ToString()), Color.Black);
                     this.RecvDataEvent(state.sb.ToString());
-
+              
                     //receiveDone.Set();
                     //Get the rest of the data
-                    //client.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0, new AsyncCallback(ReceiveCallback), state);
-                    StartRecv();
+                    //client.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0, new AsyncCallback(ReceiveCallback), state);  
                 }
                 else
                 {
-                    //All the data has arrived;put it in response.
-                    if (state.sb.Length > 1)
-                    {
-                        response = state.sb.ToString();
-                    }
-                    //Signal that all bytes have been received.
-                    //this.RecvDataEvent(state.sb.ToString());
-                    receiveDone.Set();
+                    WriteLog(string.Format("ReceiveCallback recv data empty from server"), Color.Black);
                 }
+                receiveDone.Set();
+                StartRecv();
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex.ToString());
+                WriteLog(string.Format(" ReceiveCallback recv data error: {0} from server", ex.ToString()), Color.Black);
             }
         }
 
@@ -255,9 +317,10 @@ namespace DemoCS
                 DataSendThread.IsBackground = true;
                 DataSendThread.Start();
             }
-            catch(Exception)
+            catch(Exception ex)
             {
-                this.SendDataEvent(false);
+                WriteLog("send exception in send:" + ex.Message, Color.Black);
+                //this.SendDataEvent(false);
             }
         }
 
@@ -269,16 +332,16 @@ namespace DemoCS
                 Socket client = (Socket)ar.AsyncState;
                 //complete sned the data to the remote device.
                 int bytesSend = client.EndSend(ar);
-                Console.WriteLine("Send {0} bytes to server.", bytesSend);
+                //Console.WriteLine("Send {0} bytes to server.", bytesSend);
 
                 //Signal that all bytes have been send.
-                this.SendDataEvent(true);
+                //this.SendDataEvent(true);   
                 sendDone.Set();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                //Console.WriteLine(ex.ToString());
-                this.SendDataEvent(false);
+                WriteLog("send exception in send callback:" + ex.Message, Color.Black);
+                //this.SendDataEvent(false);
             }
         }
     }

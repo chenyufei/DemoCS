@@ -32,12 +32,14 @@ namespace DemoCS
         //mbedtls_aes_context aes;
 
         string m_LogRecord = string.Empty;
-        string m_JoinDeviceType = string.Empty;
-        string m_UpdataDeviceType = string.Empty;
+        string m_JoinDeviceType = "join";
+        string m_UpdataDeviceType = "updata";
 
         AsynchronousClient CsClient = null;
 
         System.Timers.Timer heartCheckTimer = new System.Timers.Timer();
+        System.Timers.Timer m_WaitTimer = new System.Timers.Timer();
+        bool m_bRunningTimer = false;
 
         int ToSendNumber = 0;
         int ToSendTime = -1;
@@ -145,21 +147,26 @@ namespace DemoCS
                 if (m_bConnectMspSuccess)
                 {
                     WriteTestLog(string.Format("连接服务器：{0}，成功", this.Text_MSPIP.Text), Color.Green);
+                    registerEUI(this.textBoxJoinEui.Text);
+                    CsClient.Receive();
                 }
                 else
                 {
+                    CsClient.StartDisConnectClient();
                     WriteTestLog(string.Format("连接服务器：{0}，失败", this.Text_MSPIP.Text), Color.Red);
                     System.Threading.Thread.Sleep(5 * 1000);
                 }
             }
             else
             {
+                CsClient.StartDisConnectClient();
                 WriteTestLog(string.Format("连接服务器：{0}，超时", this.Text_MSPIP.Text), Color.Green);
             }
             return m_bConnectMspSuccess;
         }
         private void buttonRegister_Click(object sender, EventArgs e)
         {
+            ClearLog();
             m_bInitiativeDisconnect = false;
 
             Thread ConnectThread = new Thread(ConnectServer);
@@ -178,10 +185,10 @@ namespace DemoCS
         }
         private void buttonUnRegister_Click(object sender, EventArgs e)
         {
+            ClearLog();
             m_bInitiativeDisconnect = true;
 
-            heartCheckTimer.Enabled = false;
-            heartCheckTimer.Stop();
+            StopHeartCheckTimer();
 
             this.buttonRegister.Enabled = true;
             this.buttonUnRegister.Enabled = false;
@@ -293,7 +300,7 @@ namespace DemoCS
                 }
                 catch (Exception ex)
                 {
-                    WriteTestLog(ex.Message, Color.Red);
+                    WriteTestLog("in sendDataToMSP"+ex.Message, Color.Red);
                 }
         }
         private void sendMsg()
@@ -359,9 +366,21 @@ namespace DemoCS
                 }
                 else if (cmd.Equals("updata"))
                 {
+                    StopHeartCheckTimer();
+                    StartHeartCheckTimer();
                     updataData.deveui = (null == obj["deveui"]?"":(string)obj["deveui"]);
                     updataData.payload = (null == obj["payload"]?"":(string)obj["payload"]);
                     updataData.port = (null == obj["port"]?0:(int)obj["port"]);
+
+                    int index = FindDeviceIndex(updataData.deveui);
+                    lock (this)
+                    {
+                        if (-1 != index)
+                        {
+                            CheckDeviceList[index].JoinStatus = true;
+                            CheckDeviceList[index].UpdataStatus = true;
+                        }
+                    }
 
                     string strDetail = (null == obj["detail"]?"":obj["detail"].ToString());
                     if(string.IsNullOrEmpty(strDetail))
@@ -420,9 +439,12 @@ namespace DemoCS
                     updataData.datr = (null == objMotetx["datr"]?"":(string)objMotetx["datr"]);
 
                     WriteTestLog(string.Format("deveui:{0},port:{1},seqno:{2},freq:{3},datr:{4},payload:{5}", updataData.deveui, updataData.port, updataData.seqno, updataData.freq, updataData.datr, updataData.payload), Color.Green);
-                    if (this.checkBox_File.Checked)
+                    if (this.checkBox_saveData.Checked)
                     {
-                        m_UpdataDeviceType = getDeviceType(updataData.deveui);
+                        if(CheckDeviceList.Count !=0 && index==-1)
+                        {
+                            return;
+                        }
                         string strGwRx = (null == objApp["gwrx"]?"":objApp["gwrx"].ToString());
                         if(string.IsNullOrEmpty(strGwRx))
                         {
@@ -452,13 +474,30 @@ namespace DemoCS
                 else if (cmd.Equals("dev_join"))
                 {
                     WriteTestLog(recvData, Color.Green);
+                    StopHeartCheckTimer();
+                    StartHeartCheckTimer();
+
                     if (this.checkBox_File.Checked)
                     {
-                        devJoinData.deveui = (null == obj["deveui"]?"":(string)obj["deveui"]);
-                        m_JoinDeviceType = getDeviceType(devJoinData.deveui);
+                        devJoinData.deveui = (null == obj["deveui"] ? "" : (string)obj["deveui"]);
+
+                        int index = FindDeviceIndex(devJoinData.deveui);
+                        if (CheckDeviceList.Count != 0 && index == -1)
+                        {
+                            return;
+                        }
+                        
+                        lock(this)
+                        {
+                            if (-1 != index)
+                            {
+                                CheckDeviceList[index].JoinStatus = true;
+                            }
+                        }
 
                         devJoinData.classType = (null == obj["class"]?"":(string)obj["class"]);
                         devJoinData.version = (null == obj["ver"]?"":(string)obj["ver"]);
+
                         SaveResult(true);
                     }
                 }
@@ -653,24 +692,36 @@ namespace DemoCS
             sendDataToMSP(strDevStateContent);
         }
 
+        private void StopHeartCheckTimer()
+        {
+            iRecvHeartBeatNumber = 0;
+            heartCheckTimer.Enabled = false;
+            heartCheckTimer.Stop();
+        }
+
+        private void StartHeartCheckTimer()
+        {
+            heartCheckTimer.Enabled = true;
+            heartCheckTimer.Start();
+        }
         private void sendHeartbeatAck()
         {
             string strheartBeatAck = string.Format("{{\"cmd\":\"heartbeat_ack\"}}");
             iRecvHeartBeatNumber = 0;
             sendDataToMSP(strheartBeatAck);
-            heartCheckTimer.Enabled = false;
-            heartCheckTimer.Stop();
-            heartCheckTimer.Enabled = true;
-            heartCheckTimer.Start();
+
+            StopHeartCheckTimer();
+            StartHeartCheckTimer();
         }
 
         void CreateSocketClient()
         {
             CsClient = new AsynchronousClient();
             CsClient.ConnectEvent += new AsynchronousClient.SocketConnectResultEventHandler(SocketConnectResult);
-            CsClient.DisconnectEvent += new AsynchronousClient.SocketDisconnectResultEventHandler(SocketDisconnectResult);
-            CsClient.SendDataEvent += new AsynchronousClient.SocketSendEventHandler(SocketSendResult);
+            //CsClient.DisconnectEvent += new AsynchronousClient.SocketDisconnectResultEventHandler(SocketDisconnectResult);
+            //CsClient.SendDataEvent += new AsynchronousClient.SocketSendEventHandler(SocketSendResult);
             CsClient.RecvDataEvent += new AsynchronousClient.SocketRecvEventHandler(SocketRecvString);
+            CsClient.WriteLog += new AsynchronousClient.WriteLogEventHandler(WriteTestLog);
         }
         private void CLaa_IoT_Load(object sender, EventArgs e)
         {
@@ -687,23 +738,21 @@ namespace DemoCS
             this.comboBox_Cmd.DisplayMember = "命令";
             this.comboBox_Cmd.SelectedIndex = 0;
 
-            this.Text_MSPIP.Text = "139.129.216.128";
+            this.Text_MSPIP.Text = "121.196.195.31";
             this.Text_MSPPort.Text = "30003";
-            this.textBoxJoinEui.Text = "2c26c50065650030";
+            this.textBoxJoinEui.Text = "2c26c5006565eeee";
            
             this.buttonRegister.Enabled = true;
             this.buttonUnRegister.Enabled = false;
 
             if (this.checkBox_File.Checked)
             {
-                this.buttonFind.Show();
                 this.textBoxFileName.Show();
                 this.checkBox_File.Enabled = true;
             }
             else
             {
                 this.textBoxFileName.Hide();
-                this.buttonFind.Hide();
             }
 
             heartCheckTimer.Enabled = false;
@@ -711,20 +760,76 @@ namespace DemoCS
             heartCheckTimer.Elapsed += new System.Timers.ElapsedEventHandler(HeartTimeOut);
             heartCheckTimer.Stop();
 
+            m_WaitTimer.Interval = 200;
+            m_WaitTimer.Elapsed += new System.Timers.ElapsedEventHandler(WaitTimeOut);
+            m_WaitTimer.AutoReset = false;
+            m_WaitTimer.Enabled = false;
+            m_WaitTimer.Stop();
+
+            this.button_ReportResult.Enabled = this.checkBox_saveData.Checked;
+            this.textBox_input_deveui.Enabled = this.checkBox_saveData.Checked;
+            this.richTextBox_ReportResult.Enabled = this.checkBox_saveData.Checked;
+
             CreateSocketClient();
+        }
+        private void StartWaitTimer(string strText)
+        {
+            if (string.IsNullOrEmpty(strText))
+            {
+                WriteTestLog("输入为空，请确认输入信息", Color.Red);
+                return;
+            }
+            if (!m_bRunningTimer)
+            {
+                m_WaitTimer.Enabled = false;
+                m_WaitTimer.Stop();
+
+                m_WaitTimer.Enabled = true;
+                m_WaitTimer.Start();
+
+                m_bRunningTimer = true;
+            }
+        }
+
+        private int FindDeviceIndex(string strdeveui)
+        {
+            lock(this)
+            {
+                int index = 0;
+                int iCount = CheckDeviceList.Count;
+                for (index = 0; index < iCount; index++)
+                {
+                    if (CheckDeviceList[index].deveui == strdeveui)
+                    {
+                        return index;
+                    }
+                }
+
+                return -1;
+            }
+        }
+        private void AddTestDevice(string strdeveui)
+        {
+            if(FindDeviceIndex(strdeveui) == -1)
+            {
+                TestDevice Device = new TestDevice();
+                Device.deveui = strdeveui;
+                Device.JoinStatus = false;
+                Device.UpdataStatus = false;
+
+                CheckDeviceList.Add(Device);
+                this.label_Test_Count.Text = string.Format("{0}",CheckDeviceList.Count);
+            }
+        }
+        private void WaitTimeOut(object source, ElapsedEventArgs e)
+        {
+            m_bRunningTimer = false;
+            AddTestDevice(this.textBox_input_deveui.Text);
+            this.textBox_input_deveui.Clear();
         }
 
         private void SocketConnectResult(bool bConnect)
         {
-            if(bConnect)
-            {
-                registerEUI(this.textBoxJoinEui.Text);
-                CsClient.Receive();  
-            }
-            else
-            {
-
-            }
             m_bConnectMspSuccess = bConnect;
             m_WaitConnectEvent.Set();
         }
@@ -740,43 +845,24 @@ namespace DemoCS
             {
                 WriteTestLog(string.Format("Disconnect from {0} 失败",this.Text_MSPIP.Text), Color.Red);
             }
-
-            if (!m_bInitiativeDisconnect)
-            {
-                ReConnectThread = new Thread(ReConnect);
-                ReConnectThread.IsBackground = true;
-                ReConnectThread.Start();
-            }
         }
         private void ReConnect()
         {
-            while(true)
+            for(int iIndex=0;iIndex < 5;iIndex++)
             {
                 WriteTestLog(string.Format("正在重新连接服务器：{0}", this.Text_MSPIP.Text), Color.Red);
-                CreateSocketClient();
+                //CreateSocketClient();
                 if (dealRegister())
                 {
                     break;
                 }
                 else
                 {
-                    WriteTestLog(string.Format("静等60秒后会再次尝试重连"), Color.Red);
-                    System.Threading.Thread.Sleep(1000*60);
+                    WriteTestLog(string.Format("静等{0}秒后会再次尝试重连", 60 * (iIndex + 1)), Color.Red);
+                    System.Threading.Thread.Sleep(1000*60*(iIndex+1));
                 }
             }
         }
-        private void SocketSendResult(bool bResult)
-        {
-            if(bResult)
-            {
-
-            }
-            else
-            {
-                WriteTestLog(string.Format("send {0} to {1} error", this.textBoxPayload.Text,this.textBoxDevEui.Text), Color.Red);
-            }
-        }
-
         private void SocketRecvString(string strResult)
         {
             if(strResult.Contains("\n12"))
@@ -809,6 +895,13 @@ namespace DemoCS
                 heartCheckTimer.Stop();
 
                 CsClient.StartDisConnectClient();
+                System.Threading.Thread.Sleep(1000 * 2);
+                if (!m_bInitiativeDisconnect)
+                {
+                    ReConnectThread = new Thread(ReConnect);
+                    ReConnectThread.IsBackground = true;
+                    ReConnectThread.Start();
+                }
             }
         }
         private void comboBox_Cmd_SelectedIndexChanged(object sender, EventArgs e)
@@ -881,27 +974,20 @@ namespace DemoCS
             return CmdSeq += CmdSeq + 2;
         }
 
-        private void checkBox_File_CheckedChanged(object sender, EventArgs e)
+        private void ClearLog()
         {
-            this.textBoxFileName.Enabled = this.checkBox_File.Checked;
-            if (this.checkBox_File.Checked)
-            {
-                this.textBoxFileName.Text = "deveui所在文件名称";
-                this.textBoxFileName.Show();
-                this.checkBox_File.Enabled = true;
-                this.buttonFind.Show();
-            }
-            else
-            {
-                this.textBoxFileName.Hide();
-                this.buttonFind.Hide();
-            }
+            this.richTextBox_Log.Clear();
         }
-
         private void loadDeveuiFile(string strFileName)
         {
+            CheckDeviceList.Clear();
             try
             {
+                if(!File.Exists(strFileName))
+                {
+                    WriteTestLog(strFileName + " 文件不存在，请扫码录入待测试的设备\n", Color.Red);
+                    return;
+                }
                 string strcontent = File.ReadAllText(strFileName, Encoding.UTF8);
                 string[] ContentLines= { } ;
                 bool parseSuccess = true;
@@ -925,25 +1011,17 @@ namespace DemoCS
                 if(parseSuccess)
                 {
                     int iCount = ContentLines.Count();
-                    TestDevice DeviceList = new TestDevice();
-                    bool bFirst = true;
-                    for(int i=3;i<iCount;i++)
+                    
+                    for(int i=0;i<iCount;i++)
                     {
-                        if(ContentLines[i].StartsWith("00"))
+                        if (ContentLines[i].StartsWith("00"))
                         {
-                            DeviceList.AddDevice(ContentLines[i].ToLower().Substring(2));
+                            AddTestDevice(ContentLines[i].ToLower().Substring(2));
                         }
                         else
                         {
-                            if(!bFirst)
-                            {
-                                DeviceList = new TestDevice();
-                            }
-                            bFirst = false;
-                            DeviceList.DeviceType = ContentLines[i];
-                            CheckDeviceList.Add(DeviceList);
+                            AddTestDevice(ContentLines[i]);                          
                         }
-                        
                     }
                 }
             }
@@ -1067,36 +1145,6 @@ namespace DemoCS
             }
         }
 
-        private void buttonFind_Click(object sender, EventArgs e)
-        {
-            OpenFileDialog file = new OpenFileDialog();
-            file.Filter = "(*.txt)|*.txt";
-            //file.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            file.InitialDirectory = System.Windows.Forms.Application.StartupPath;
-            file.Multiselect = false;
-
-            if (file.ShowDialog() == DialogResult.Cancel)
-            {
-                return;
-            }
-
-            this.textBoxFileName.Text = file.FileName;
-            loadDeveuiFile(file.FileName);
-        }
-
-        private string getDeviceType(string strDevEUI)
-        {
-            for(int i=0;i< CheckDeviceList.Count;i++)
-            {
-                if(CheckDeviceList[i].CheckExist(strDevEUI))
-                {
-                    return CheckDeviceList[i].DeviceType;
-                }
-            }
-
-            return string.Empty;
-        }
-
         //字符串转16进制字节数组
         /// <summary>
         /// 字符串转16进制字节数组
@@ -1112,6 +1160,139 @@ namespace DemoCS
             for (int i = 0; i < returnBytes.Length; i++)
                 returnBytes[i] = Convert.ToByte(hexString.Substring(i * 2, 2), 16);
             return returnBytes;
+        }
+
+        private void button_ReportResult_Click(object sender, EventArgs e)
+        {
+            if (CheckDeviceList.Count == 0)
+            {
+                WriteReportLog(string.Format("没有录入测试设备", CheckDeviceList.Count), Color.Red);
+                return;
+            }
+            lock (this)
+            {
+                WriteReportLog(string.Format("正在分析{0}个测试设备", CheckDeviceList.Count), Color.Green);
+                List<string> UpdataList = new List<string>();
+                List<string> JoinList = new List<string>();
+                List<string> NoJoinList = new List<string>();
+
+                for (int index =0;index < CheckDeviceList.Count;index++)
+                {
+                    if(CheckDeviceList[index].UpdataStatus)
+                    {
+                        UpdataList.Add(CheckDeviceList[index].deveui);
+                    }
+                    else if(CheckDeviceList[index].JoinStatus)
+                    {
+                        JoinList.Add(CheckDeviceList[index].deveui);
+                    }
+                    else
+                    {
+                        NoJoinList.Add(CheckDeviceList[index].deveui);
+                    }
+                }
+
+                if(UpdataList.Count ==0)
+                {
+                    WriteReportLog(string.Format("没有设备上报数据"), Color.Red);
+                }
+                else
+                {
+                    WriteReportLog(string.Format("共有{0}个设备有数据上报，分别如下所示", UpdataList.Count), Color.Green);
+                    string strOut = string.Empty;
+                    for (int i=0;i<UpdataList.Count;i++)
+                    {
+                        strOut += string.Format("{0}\r\n",UpdataList[i]);
+                    }
+                    WriteReportLog(string.Format("{0}", strOut), Color.Green);
+                }
+                
+                if(UpdataList.Count == CheckDeviceList.Count)
+                {
+                    return;
+                }
+
+                if(JoinList.Count == 0)
+                {
+
+                }
+                else
+                {
+                    WriteReportLog(string.Format("\r\n共有{0}个设备有入网，分别如下所示", JoinList.Count), Color.Green);
+                    string strOut = string.Empty;
+                    for (int i = 0; i < JoinList.Count; i++)
+                    {
+                        strOut += string.Format("{0}\r\n", JoinList[i]);
+                    }
+                    WriteReportLog(string.Format("{0}", strOut), Color.DarkGreen);
+                }
+
+                if (UpdataList.Count + JoinList.Count == CheckDeviceList.Count)
+                {
+                    return;
+                }
+
+                if (NoJoinList.Count == 0)
+                {
+
+                }
+                else
+                {
+                    WriteReportLog(string.Format("\r\n共有{0}个设备无入网，分别如下所示", NoJoinList.Count), Color.Green);
+                    string strOut = string.Empty;
+                    for (int i = 0; i < NoJoinList.Count; i++)
+                    {
+                        strOut += string.Format("{0}\r\n", NoJoinList[i]);
+                    }
+                    WriteReportLog(string.Format("{0}", strOut), Color.DarkGreen);
+                }
+            }
+        }
+
+        private void textBox_input_deveui_TextChanged(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(this.textBox_input_deveui.Text.ToString()))
+                return;
+            StartWaitTimer(this.textBox_input_deveui.Text);
+        }
+
+        private void checkBox_saveData_CheckedChanged(object sender, EventArgs e)
+        {
+            this.button_ReportResult.Enabled = this.checkBox_saveData.Checked;
+            this.textBox_input_deveui.Enabled = this.checkBox_saveData.Checked;
+            this.richTextBox_ReportResult.Enabled = this.checkBox_saveData.Checked;
+            if (this.checkBox_saveData.Checked)
+            {
+                loadDeveuiFile("deveui.txt");
+            }
+            else
+            {
+                this.richTextBox_ReportResult.Clear();
+            }
+        }
+
+        private void WriteReportLog(string msg, Color col)
+        {
+            try
+            {
+                if (this.richTextBox_ReportResult.InvokeRequired)
+                {
+                    WriteTestLogDelegate d = new WriteTestLogDelegate(WriteReportLog);
+                    this.richTextBox_Log.Invoke(d, new object[] { msg, col });
+                }
+                else
+                {
+                    this.richTextBox_ReportResult.SelectionColor = col;
+                    this.richTextBox_ReportResult.AppendText(msg);
+                    this.richTextBox_ReportResult.AppendText("\r\n");
+                    this.richTextBox_ReportResult.ScrollToCaret();
+                }
+            }
+            catch (Exception)
+            {
+
+            }
+
         }
     }
 }
