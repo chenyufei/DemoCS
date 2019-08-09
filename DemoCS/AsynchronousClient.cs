@@ -34,7 +34,6 @@ namespace DemoCS
         private ManualResetEvent receiveDone = new ManualResetEvent(false);
 
         byte[] RecvBuffer = new byte[1024 * 1024];
-
         //The response from the remote device.
         private static string response = string.Empty;
         private string sendString = string.Empty;
@@ -47,6 +46,7 @@ namespace DemoCS
         Thread DataSendThread = null;
         Thread DataRecvThread = null;
 
+        bool bExit = false;
         public bool GetConnectState()
         {
             return DemoCSclient.Connected;
@@ -55,6 +55,7 @@ namespace DemoCS
         {
             try
             {
+                bExit = false;
                 IPAddress ip = IPAddress.Parse(m_MspIp);
                 IPEndPoint remoteIP = new IPEndPoint(ip, int.Parse(m_Port));
                 DemoCSclient = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -83,7 +84,8 @@ namespace DemoCS
         {
             try
             {
-                if(null != DemoCSclient && DemoCSclient.Connected)
+                System.Threading.Thread.Sleep(2000);
+                if (null != DemoCSclient && DemoCSclient.Connected)
                 {
                     DemoCSclient.Shutdown(SocketShutdown.Both);
                     System.Threading.Thread.Sleep(10);
@@ -119,8 +121,25 @@ namespace DemoCS
             }
             try
             {
-                byte[] byteData = Encoding.UTF8.GetBytes(sendString);
-                DemoCSclient.BeginSend(byteData, 0, byteData.Length, 0, new AsyncCallback(SendCallback), DemoCSclient);
+                int length = (sendString.Length + 1) & 0xFFFF;
+                byte[] senddata = new byte[length + 5];
+
+                int hValue = length >> 8;
+                int lValue = length & 0xFF;
+                byte[] arr = new byte[] { (byte)'\n', (byte)1, (byte)2, (byte)hValue, (byte)lValue };
+                arr.CopyTo(senddata, 0);
+                /*
+                senddata[0] = UTF8Encoding.UTF8.GetBytes("\n")[0];
+                senddata[1] = UTF8Encoding.UTF8.GetBytes("1")[0];
+                senddata[2] = UTF8Encoding.UTF8.GetBytes("2")[0];
+                */
+
+                byte[] str = UTF8Encoding.UTF8.GetBytes(sendString);
+                Buffer.BlockCopy(str, 0, senddata, 5, sendString.Length);
+
+                senddata[sendString.Length + 5] = UTF8Encoding.UTF8.GetBytes("\0")[0];
+
+                DemoCSclient.BeginSend(senddata, 0, senddata.Length, 0, new AsyncCallback(SendCallback), DemoCSclient);
                 if(sendDone.WaitOne(60*1000))
                 {
                     //WriteLog("in StartSend  send ok", Color.Red);
@@ -207,8 +226,12 @@ namespace DemoCS
 
         public void StartDisConnectClient()
         {
+            WriteLog("DisConnect", Color.Black);
             try
             {
+                bExit = true;
+                DataRecvThread.Abort();
+
                 DisConnectMSPThread = new Thread(StartDisConnect);
                 DisConnectMSPThread.IsBackground = true;
                 DisConnectMSPThread.Start();   
@@ -300,7 +323,10 @@ namespace DemoCS
                     WriteLog(string.Format("ReceiveCallback recv data empty from server"), Color.Black);
                 }
                 receiveDone.Set();
-                StartRecv();
+                if(!bExit)
+                {
+                    StartRecv();
+                }          
             }
             catch (Exception ex)
             {
@@ -308,11 +334,11 @@ namespace DemoCS
             }
         }
 
-        public void Send(byte[] byteData)
+        public void Send(string byteData)
         {
             try
             {
-                sendString = Encoding.UTF8.GetString(byteData);
+                sendString = byteData;
                 DataSendThread = new Thread(StartSend);
                 DataSendThread.IsBackground = true;
                 DataSendThread.Start();

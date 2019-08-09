@@ -139,6 +139,7 @@ namespace DemoCS
                 return false;
             }
 
+            CreateSocketClient();
             m_WaitConnectEvent.Reset();
             CsClient.StartConnectClient(this.Text_MSPIP.Text, this.Text_MSPPort.Text);
 
@@ -198,11 +199,11 @@ namespace DemoCS
         private void buttonSendToMSP_Click(object sender, EventArgs e)
         {
             sendType = SENDTYPE.NONE;
-            if (this.checkBoxTimes.Checked && this.checkBoxNumber.Checked)
+            if (this.checkBox_Time.Checked && this.checkBox_Number.Checked)
             {
                 sendType = SENDTYPE.ALL;
-                string strTimes = this.textBoxTimes.Text;
-                string strNumber = this.textBoxNumber.Text;
+                string strTimes = this.textBox_Time.Text;
+                string strNumber = this.textBox_Number.Text;
                 if (strTimes.Equals(""))
                 {
                     WriteTestLog("请输入要发送时长，取消发送，取消选中即可", Color.Red);
@@ -215,21 +216,21 @@ namespace DemoCS
                 }
                 else
                 {
-                    WriteTestLog(string.Format("{0}分钟内，将发送{1}次", this.textBoxTimes.Text, this.textBoxNumber), Color.Red);
+                    WriteTestLog(string.Format("{0}分钟内，将发送{1}次", this.textBox_Time.Text, this.textBox_Number), Color.Red);
                 }
             }
-            else if (this.checkBoxTimes.Checked)
+            else if (this.checkBox_Time.Checked)
             {
-                string strTimes = this.textBoxTimes.Text;
+                string strTimes = this.textBox_Time.Text;
                 if (strTimes.Equals(""))
                 {
                     WriteTestLog("请输入要发送多长时间，0表示：一直发送，取消发送，取消选中即可", Color.Red);
                     return;
                 }
             }
-            else if (this.checkBoxNumber.Checked)
+            else if (this.checkBox_Number.Checked)
             {
-                string strNumber = this.textBoxNumber.Text;
+                string strNumber = this.textBox_Number.Text;
                 if (strNumber.Equals(""))
                 {
                     WriteTestLog("请输入要发送多少次，取消发送，取消选中即可", Color.Red);
@@ -239,9 +240,9 @@ namespace DemoCS
 
             if (sendType != SENDTYPE.NONE)
             {
-                this.buttonSendToMSP.Enabled = false;
+                this.button_SendToMsp.Enabled = false;
                 this.comboBox_Cmd.Enabled = false;
-                this.buttonCancelSend.Enabled = true;
+                this.button_CancelSend.Enabled = true;
 
                 sendThread = new Thread(sendMsg);
                 sendThread.IsBackground = true;
@@ -279,24 +280,7 @@ namespace DemoCS
         {
                 try
                 {
-                    int length = (data.Length + 1) & 0xFFFF;
-                    byte[] senddata = new byte[length + 5];
-
-                    int hValue = length >> 8;
-                    int lValue = length & 0xFF;
-                    byte[] arr = new byte[] { (byte)'\n', (byte)'1', (byte)'2', (byte)hValue, (byte)lValue };
-                    arr.CopyTo(senddata, 0);
-                    /*
-                    senddata[0] = UTF8Encoding.UTF8.GetBytes("\n")[0];
-                    senddata[1] = UTF8Encoding.UTF8.GetBytes("1")[0];
-                    senddata[2] = UTF8Encoding.UTF8.GetBytes("2")[0];
-                    */
-
-                    byte[] str = UTF8Encoding.UTF8.GetBytes(data);
-                    Buffer.BlockCopy(str, 0, senddata, 5, data.Length);
-
-                    senddata[data.Length + 5] = UTF8Encoding.UTF8.GetBytes("\0")[0];
-                    CsClient.Send(senddata);
+                    CsClient.Send(data);
                 }
                 catch (Exception ex)
                 {
@@ -309,19 +293,19 @@ namespace DemoCS
             switch (sendType)
             {
                 case SENDTYPE.ALL:
-                    ToSendTime = int.Parse(this.textBoxTimes.Text);
-                    ToSendNumber = int.Parse(this.textBoxNumber.Text);
+                    ToSendTime = int.Parse(this.textBox_Time.Text);
+                    ToSendNumber = int.Parse(this.textBox_Number.Text);
                     if (ToSendTime / ToSendNumber != 0)
                     {
                         iSleepTime = (ToSendTime / ToSendNumber) * 60000;
                     }
                     break;
                 case SENDTYPE.TIMER:
-                    ToSendTime = int.Parse(this.textBoxTimes.Text);
+                    ToSendTime = int.Parse(this.textBox_Time.Text);
                     iSleepTime = 5 * 60000;
                     break;
                 case SENDTYPE.NUMBER:
-                    ToSendNumber = int.Parse(this.textBoxNumber.Text);
+                    ToSendNumber = int.Parse(this.textBox_Number.Text);
                     iSleepTime = 2 * 60000;
                     break;
                 default:
@@ -349,6 +333,7 @@ namespace DemoCS
             try
             {
                 string cmd = (null == obj["cmd"]?"":(string)obj["cmd"]);
+                WriteTestLog(string.Format("{0}", cmd), Color.Green);
                 if (cmd.Equals("join_ack"))
                 {
                     WriteTestLog(recvData, Color.Green);
@@ -477,7 +462,7 @@ namespace DemoCS
                     StopHeartCheckTimer();
                     StartHeartCheckTimer();
 
-                    if (this.checkBox_File.Checked)
+                    if (this.checkBox_saveData.Checked)
                     {
                         devJoinData.deveui = (null == obj["deveui"] ? "" : (string)obj["deveui"]);
 
@@ -610,17 +595,19 @@ namespace DemoCS
                 WriteTestLog("请输入合法的DevEUI，长度为16位，0-f,例：004a77033900009b", Color.Red);
                 return;
             }
-            string strPort = this.textBoxSendToPort.Text;
-            if (!checkPort(strPort))
+            string strPort = this.textBox_DownPort.Text;
+            /*
+            if (string.IsNullOrEmpty(strPort))
             {
                 WriteTestLog("请输入合法的下行端口，可在终端上行的数据中查看端口号例如：15", Color.Red);
                 return;
             }
-            string confirm = this.checkBoxConfirmed.Checked ? "true" : "false";
-            string payload = this.textBoxPayload.Text;
+            */
+            string confirm = this.checkBox_Confirm.Checked ? "true" : "false";
+            string payload = this.textBox_Payload.Text;
 
             byte[] bytes = Encoding.Default.GetBytes(payload);
-            if (this.radioButtonHex.Checked)
+            if (this.radioButton_Hex.Checked)
             {
                 bytes = strToToHexByte(payload);
             }
@@ -655,23 +642,23 @@ namespace DemoCS
 
         private void dealbCast()
         {
-            string strPort = this.textBoxSendToPort.Text;
+            string strPort = this.textBox_DownPort.Text;
             if (!checkPort(strPort))
             {
                 WriteTestLog("请输入合法的下行端口，可在终端上行的数据中查看端口号例如：15", Color.Red);
                 return;
             }
-            string strPayload = this.textBoxPayload.Text;
+            string strPayload = this.textBox_Payload.Text;
 
             byte[] bytes = Encoding.Default.GetBytes(strPayload);
-            if (this.radioButtonHex.Checked)
+            if (this.radioButton_Hex.Checked)
             {
                 bytes = strToToHexByte(strPayload);
             }
 
             strPayload = Convert.ToBase64String(bytes);
 
-            string strTimes = this.textBoxNumber.Text;
+            string strTimes = this.textBox_Number.Text;
             if (!checkPort(strTimes))
             {
                 WriteTestLog("请输入合法的发送次数，例如：15", Color.Red);
@@ -738,22 +725,12 @@ namespace DemoCS
             this.comboBox_Cmd.DisplayMember = "命令";
             this.comboBox_Cmd.SelectedIndex = 0;
 
-            this.Text_MSPIP.Text = "121.196.195.31";
+            this.Text_MSPIP.Text = "139.129.216.128";
             this.Text_MSPPort.Text = "30003";
-            this.textBoxJoinEui.Text = "2c26c5006565eeee";
+            this.textBoxJoinEui.Text = "2c26c50065650041";
            
             this.buttonRegister.Enabled = true;
             this.buttonUnRegister.Enabled = false;
-
-            if (this.checkBox_File.Checked)
-            {
-                this.textBoxFileName.Show();
-                this.checkBox_File.Enabled = true;
-            }
-            else
-            {
-                this.textBoxFileName.Hide();
-            }
 
             heartCheckTimer.Enabled = false;
             heartCheckTimer.Interval = 61000; //执行间隔时间,单位为毫秒; 这里实际间隔为1分钟  
@@ -851,7 +828,7 @@ namespace DemoCS
             for(int iIndex=0;iIndex < 5;iIndex++)
             {
                 WriteTestLog(string.Format("正在重新连接服务器：{0}", this.Text_MSPIP.Text), Color.Red);
-                //CreateSocketClient();
+                
                 if (dealRegister())
                 {
                     break;
@@ -865,16 +842,18 @@ namespace DemoCS
         }
         private void SocketRecvString(string strResult)
         {
-            if(strResult.Contains("\n12"))
+            byte[] RecvStr = UTF8Encoding.UTF8.GetBytes(strResult);
+            if (RecvStr[0] =='\n' && RecvStr[1] == 1 && RecvStr[2] == 2)
             {
                 string[] recv = strResult.Split(new string[] { "\n12" }, StringSplitOptions.RemoveEmptyEntries);
                 string recvData = string.Empty;
                 for (int i = 0; i < recv.Length; i++)
                 {
                     byte[] str = Encoding.UTF8.GetBytes(recv[i]);
-                    recvData = Encoding.UTF8.GetString(str, 2, str.Length - 2);
+                    recvData = Encoding.UTF8.GetString(str, 5, str.Length - 5);
 
                     recvData = recvData.TrimEnd('\0');
+                    WriteTestLog(recvData, Color.Red);
                     dealRecvData(recvData);
                 }
             }
@@ -951,11 +930,13 @@ namespace DemoCS
 
             return Convert.ToBase64String(resultArray, 0, resultArray.Length);
             */
-            byte[] keyArray = strToToHexByte("ffffffffffffffffffffffffffffffff");
+            //byte[] keyArray = strToToHexByte("ffffffffffffffffffffffffffffffff");
+            byte[] keyArray = strToToHexByte(this.textBox_APPKEY.Text.Trim());
             UInt64 inAppeui = Convert.ToUInt64(appeui, 16);
             byte[] challenge = new byte[32 + 1];
             challenge_identification(keyArray, inAppeui, appnonce, ref challenge[0]);
             string strChallenge = System.Text.Encoding.Default.GetString(challenge).TrimEnd('\0');//.Remove(32);
+            WriteTestLog(string.Format("根据{0}和{1} 计算出的挑战字为{2}",appeui,appnonce, strChallenge),Color.Green);
             return strChallenge;
         }
 
@@ -963,8 +944,23 @@ namespace DemoCS
         {
             Random rd = new Random();
             UInt32 randInt = (UInt32)rd.Next();
-            
+            if(string.IsNullOrEmpty(this.textBox_appnonce.Text.Trim()))
+            {
+                randInt = (UInt32)rd.Next();
+            }
+            else
+            {
+                try
+                {
+                    randInt = UInt32.Parse(this.textBox_appnonce.Text.Trim());
+                }
+                catch
+                {
+                    randInt = (UInt32)rd.Next();
+                }
+            }
             WriteTestLog(string.Format("appnonce:{0}",randInt),Color.Red);
+            this.textBox_appnonce.Text = string.Format("{0}", randInt);
             string JoinData = string.Format("{{\"cmd\":\"join\",\"cmdseq\":{0},\"appeui\":\"{1}\",\"appnonce\":{2},\"challenge\":\"{3}\"}}", getCmdSeq(), strEUI, randInt, GenerateChallenge(strEUI, randInt));
             sendDataToMSP(JoinData);
         }
@@ -1129,7 +1125,7 @@ namespace DemoCS
         }
         private void buttonCancelSend_Click(object sender, EventArgs e)
         {
-            this.buttonSendToMSP.Enabled = true;
+            this.button_SendToMsp.Enabled = true;
             this.comboBox_Cmd.Enabled = true;
 
             try
